@@ -31,6 +31,7 @@ import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
 import { mentionDeletionPlugin } from "../lib/mention-deletion";
+import { applyMention } from "../lib/mention-apply";
 import { cn } from "../lib/utils";
 
 /* ---- Mention types ---- */
@@ -161,22 +162,6 @@ function detectMention(container: HTMLElement): MentionState | null {
   };
 }
 
-function mentionMarkdown(option: MentionOption): string {
-  if (option.kind === "project" && option.projectId) {
-    return `[@${option.name}](${buildProjectMentionHref(option.projectId, option.projectColor ?? null)}) `;
-  }
-  const agentId = option.agentId ?? option.id.replace(/^agent:/, "");
-  return `[@${option.name}](${buildAgentMentionHref(agentId, option.agentIcon ?? null)}) `;
-}
-
-/** Replace `@<query>` in the markdown string with the selected mention token. */
-function applyMention(markdown: string, query: string, option: MentionOption): string {
-  const search = `@${query}`;
-  const replacement = mentionMarkdown(option);
-  const idx = markdown.lastIndexOf(search);
-  if (idx === -1) return markdown;
-  return markdown.slice(0, idx) + replacement + markdown.slice(idx + search.length);
-}
 
 /* ---- Component ---- */
 
@@ -340,8 +325,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     const result = detectMention(containerRef.current);
     mentionStateRef.current = result;
     if (result) {
-      setMentionState(result);
-      setMentionIndex(0);
+      // Only reset the navigation index when the query actually changes so
+      // that arrow-key navigation is not wiped out by concurrent
+      // selectionchange events (e.g. from Lexical's internal reconciliation).
+      setMentionState((prev) => {
+        if (prev?.query !== result.query) {
+          setMentionIndex(0);
+        }
+        return result;
+      });
     } else {
       setMentionState(null);
     }
@@ -382,7 +374,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     (option: MentionOption) => {
       // Read from ref to avoid stale-closure issues (selectionchange can
       // update state between the last render and this callback firing).
-      const state = mentionStateRef.current;
+      // If the ref was cleared by a concurrent selectionchange (e.g. from
+      // Lexical's internal DOM reconciliation), fall back to re-detecting
+      // the mention directly from the live DOM so that ENTER always works.
+      const state = mentionStateRef.current ?? (containerRef.current ? detectMention(containerRef.current) : null);
       if (!state) return;
       const current = latestValueRef.current;
       const next = applyMention(current, state.query, option);
